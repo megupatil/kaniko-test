@@ -1,9 +1,6 @@
 name: Kaniko Docker Build Test
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
@@ -12,13 +9,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build Docker image with Kaniko
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
-            gcr.io/kaniko-project/executor:latest \
+            -v "${{ github.workspace }}:/workspace" \
+            gcr.io/kaniko-project/executor:v1.23.2-debug \
             --dockerfile=/workspace/Dockerfile \
             --context=dir:///workspace \
             --no-push \
