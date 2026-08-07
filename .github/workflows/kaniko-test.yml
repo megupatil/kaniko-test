@@ -1,15 +1,29 @@
-name: Kaniko Docker Build Test
+name: Kaniko Build + Wiz CLI Scan
 
 on:
   workflow_dispatch:
 
 jobs:
-  kaniko-build:
+  kaniko-build-and-scan:
     runs-on: ubuntu-latest
+
+    env:
+      WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
+      WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      - name: Install Wiz CLI
+        run: |
+          curl -Lo wizcli https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-amd64
+          chmod +x wizcli
+          ./wizcli version
+
+      - name: Scan repository with Wiz CLI
+        run: |
+          ./wizcli scan dir .
 
       - name: Build Docker image with Kaniko
         run: |
@@ -23,3 +37,9 @@ jobs:
 
       - name: Verify image tar
         run: ls -lh image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaniko-image
+          path: image.tar
