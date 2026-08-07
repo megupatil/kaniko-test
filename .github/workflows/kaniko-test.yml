@@ -1,0 +1,28 @@
+name: Kaniko Docker Build Test
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  kaniko-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image with Kaniko
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            gcr.io/kaniko-project/executor:latest \
+            --dockerfile=/workspace/Dockerfile \
+            --context=dir:///workspace \
+            --no-push \
+            --tar-path=/workspace/image.tar
+
+      - name: Verify image tar
+        run: ls -lh image.tar
