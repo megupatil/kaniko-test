@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: kaniko-test
+
+spec:
+  type: LoadBalancer
+
+  selector:
+    app: kaniko-test
+
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
