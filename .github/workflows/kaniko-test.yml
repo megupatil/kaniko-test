@@ -142,39 +142,23 @@ jobs:
           docker images
 
       # --------------------------------------------------
-      # 11. Scan the image built by Kaniko with Wiz
+      # 11. Tag image for Artifact Registry
       #
-      # This only reports the Wiz results.
-      # It does NOT block the pipeline.
-      # --------------------------------------------------
-
-      - name: Scan Kaniko-built image with Wiz CLI
-        continue-on-error: true
-        run: |
-          echo "=============================================="
-          echo "WIZ CONTAINER IMAGE SCAN"
-          echo "=============================================="
-
-          echo "Image:"
-          echo "${IMAGE_NAME}:${GITHUB_SHA}"
-
-          echo "=============================================="
-          echo "WIZ SCAN RESULTS"
-          echo "=============================================="
-
-          ./wizcli docker scan \
-            --image "${IMAGE_NAME}:${GITHUB_SHA}"
-
-      # --------------------------------------------------
-      # 12. Tag image for Artifact Registry
+      # IMPORTANT:
+      # This creates a LOCAL tag only.
+      # Nothing is pushed to GAR yet.
       # --------------------------------------------------
 
       - name: Tag image for Artifact Registry
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
 
+          echo "=============================================="
+          echo "TAGGING LOCAL IMAGE FOR ARTIFACT REGISTRY"
+          echo "=============================================="
+
           echo "GAR IMAGE:"
-          echo "${GAR_IMAGE}"
+          echo "${GAR_IMAGE}:${GITHUB_SHA}"
 
           docker tag \
             "${IMAGE_NAME}:${GITHUB_SHA}" \
@@ -184,10 +168,44 @@ jobs:
             "${IMAGE_NAME}:${GITHUB_SHA}" \
             "${GAR_IMAGE}:latest"
 
-          docker images
+          echo "=============================================="
+          echo "GAR-TAGGED LOCAL IMAGES"
+          echo "=============================================="
+
+          docker images "${GAR_IMAGE}"
+
+      # --------------------------------------------------
+      # 12. Scan the exact GAR-tagged image with Wiz
+      #
+      # This scans the image locally.
+      # It is NOT yet pushed to Artifact Registry.
+      # Results are displayed but do not block the workflow.
+      # --------------------------------------------------
+
+      - name: Scan Kaniko-built image with Wiz CLI
+        continue-on-error: true
+        run: |
+          GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+
+          echo "=============================================="
+          echo "WIZ CONTAINER IMAGE SCAN"
+          echo "=============================================="
+
+          echo "Scanning image:"
+          echo "${GAR_IMAGE}:${GITHUB_SHA}"
+
+          echo "=============================================="
+          echo "WIZ SCAN RESULTS"
+          echo "=============================================="
+
+          ./wizcli docker scan \
+            --image "${GAR_IMAGE}:${GITHUB_SHA}"
 
       # --------------------------------------------------
       # 13. Push image to Artifact Registry
+      #
+      # This is the first point where the image is
+      # actually published to GAR.
       # --------------------------------------------------
 
       - name: Push image to Artifact Registry
@@ -233,7 +251,10 @@ jobs:
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
 
-          echo "Deploying:"
+          echo "=============================================="
+          echo "DEPLOYING IMAGE"
+          echo "=============================================="
+
           echo "${GAR_IMAGE}:${GITHUB_SHA}"
 
           kubectl set image deployment/kaniko-test \
