@@ -1,3 +1,11 @@
-FROM alpine:3.20
-RUN echo "Hello from Kaniko" > /hello.txt
-CMD ["cat", "/hello.txt"]
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir flask
+
+COPY app.py .
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
