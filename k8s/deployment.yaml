@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: kaniko-test
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: kaniko-test
+
+  template:
+    metadata:
+      labels:
+        app: kaniko-test
+
+    spec:
+      containers:
+        - name: kaniko-test
+
+          image: us-central1-docker.pkg.dev/clgcporg193-p001/kaniko-test/kaniko-test:latest
+
+          ports:
+            - containerPort: 8080
+
+          imagePullPolicy: Always
