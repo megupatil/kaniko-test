@@ -7,8 +7,6 @@ metadata:
 spec:
   replicas: 1
 
-  # For this PoC, terminate the old pod before
-  # starting the new one.
   strategy:
     type: Recreate
 
@@ -26,10 +24,22 @@ spec:
 
       containers:
         - name: kaniko-test
-
           image: us-central1-docker.pkg.dev/clgcporg193-p001/kaniko-test/kaniko-test:latest
-
           imagePullPolicy: Always
 
           ports:
             - containerPort: 8080
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
