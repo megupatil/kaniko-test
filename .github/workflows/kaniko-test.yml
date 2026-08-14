@@ -38,11 +38,32 @@ jobs:
           curl -Lo wizcli https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-amd64
           chmod +x wizcli
 
-          echo "Wiz CLI version:"
+          echo "=============================================="
+          echo "WIZ CLI VERSION"
+          echo "=============================================="
+
           ./wizcli version
 
       # ==================================================
-      # 3. Authenticate to Wiz
+      # 3. Validate Wiz CLI commands
+      # ==================================================
+
+      - name: Validate Wiz CLI commands
+        run: |
+          echo "=============================================="
+          echo "WIZ SCAN CONTAINER-IMAGE HELP"
+          echo "=============================================="
+
+          ./wizcli scan container-image --help
+
+          echo "=============================================="
+          echo "WIZ TAG HELP"
+          echo "=============================================="
+
+          ./wizcli tag --help
+
+      # ==================================================
+      # 4. Authenticate to Wiz
       # ==================================================
 
       - name: Authenticate to Wiz
@@ -55,9 +76,10 @@ jobs:
             --secret "$WIZ_CLIENT_SECRET"
 
       # ==================================================
-      # 4. Scan source repository with Wiz
+      # 5. Scan source repository with Wiz
       #
-      # Reporting only - does not block pipeline.
+      # Reporting only.
+      # Does not block the pipeline.
       # ==================================================
 
       - name: Scan repository with Wiz CLI
@@ -70,7 +92,7 @@ jobs:
           ./wizcli dir scan --path .
 
       # ==================================================
-      # 5. Authenticate to Google Cloud
+      # 6. Authenticate to Google Cloud
       # ==================================================
 
       - name: Authenticate to Google Cloud
@@ -79,7 +101,7 @@ jobs:
           credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
 
       # ==================================================
-      # 6. Setup gcloud
+      # 7. Setup gcloud
       # ==================================================
 
       - name: Set up gcloud
@@ -88,7 +110,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 7. Configure Docker for Artifact Registry
+      # 8. Configure Docker for Artifact Registry
       # ==================================================
 
       - name: Configure Docker
@@ -98,10 +120,9 @@ jobs:
             --quiet
 
       # ==================================================
-      # 8. Build container image with Kaniko
+      # 9. Build container image with Kaniko
       #
-      # Kaniko builds the image locally.
-      # No push to Artifact Registry happens here.
+      # Kaniko builds the image but does NOT push it.
       # ==================================================
 
       - name: Build image with Kaniko
@@ -120,10 +141,10 @@ jobs:
             --tar-path=/workspace/image.tar
 
       # ==================================================
-      # 9. Verify Kaniko output
+      # 10. Verify Kaniko output
       # ==================================================
 
-      - name: Verify Kaniko image
+      - name: Verify Kaniko image archive
         run: |
           echo "=============================================="
           echo "KANIKO IMAGE ARCHIVE"
@@ -132,7 +153,7 @@ jobs:
           ls -lh image.tar
 
       # ==================================================
-      # 10. Load Kaniko image into Docker
+      # 11. Load Kaniko image into Docker
       # ==================================================
 
       - name: Load Kaniko image
@@ -144,17 +165,16 @@ jobs:
           docker load -i image.tar
 
           echo "=============================================="
-          echo "LOCAL IMAGE"
+          echo "LOCAL IMAGES"
           echo "=============================================="
 
           docker images
 
       # ==================================================
-      # 11. Create the final GAR-qualified image tag
+      # 12. Create GAR-qualified local image tag
       #
       # IMPORTANT:
       # docker tag does NOT push anything.
-      # It only creates a local tag.
       # ==================================================
 
       - name: Tag image for Artifact Registry
@@ -176,16 +196,15 @@ jobs:
             "${GAR_IMAGE}:latest"
 
           echo "=============================================="
-          echo "LOCAL GAR-TAGGED IMAGE"
+          echo "GAR-TAGGED LOCAL IMAGE"
           echo "=============================================="
 
           docker images "${GAR_IMAGE}"
 
       # ==================================================
-      # 12. Scan the built image with Wiz
+      # 13. Scan built image with Wiz
       #
-      # Manual Dockerfile mapping:
-      # image -> Dockerfile path
+      # Manual Dockerfile mapping.
       #
       # Reporting only - does not block pipeline.
       # ==================================================
@@ -214,10 +233,9 @@ jobs:
             --dockerfile "${GITHUB_WORKSPACE}/Dockerfile"
 
       # ==================================================
-      # 13. Push image to Artifact Registry
+      # 14. Push image to Artifact Registry
       #
-      # This is the first point where the image is
-      # actually published to GAR.
+      # This is the first time the image is published.
       # ==================================================
 
       - name: Push image to Artifact Registry
@@ -232,10 +250,25 @@ jobs:
           docker push "${GAR_IMAGE}:latest"
 
       # ==================================================
-      # 14. Correlate/tag the pushed image in Wiz
+      # 15. Verify image in Artifact Registry
+      # ==================================================
+
+      - name: Verify image in Artifact Registry
+        run: |
+          GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+
+          echo "=============================================="
+          echo "ARTIFACT REGISTRY IMAGE"
+          echo "=============================================="
+
+          gcloud artifacts docker images describe \
+            "${GAR_IMAGE}:${GITHUB_SHA}" \
+            --format="yaml(name,version,updateTime)"
+
+      # ==================================================
+      # 16. Wiz tag / digest correlation
       #
-      # Wiz should resolve the actual registry digest
-      # and associate it with the image scan.
+      # Executed AFTER the registry push.
       # ==================================================
 
       - name: Tag image in Wiz
@@ -253,7 +286,7 @@ jobs:
             "${GAR_IMAGE}:${GITHUB_SHA}"
 
       # ==================================================
-      # 15. Get GKE credentials
+      # 17. Get GKE credentials
       # ==================================================
 
       - name: Get GKE credentials
@@ -264,7 +297,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 16. Deploy Kubernetes manifests
+      # 18. Deploy Kubernetes manifests
       # ==================================================
 
       - name: Deploy application
@@ -277,7 +310,7 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       # ==================================================
-      # 17. Deploy the exact image scanned and pushed
+      # 19. Deploy exact image scanned and pushed
       # ==================================================
 
       - name: Set deployed image
@@ -294,7 +327,7 @@ jobs:
             kaniko-test="${GAR_IMAGE}:${GITHUB_SHA}"
 
       # ==================================================
-      # 18. Check deployment state
+      # 20. Check deployment state
       # ==================================================
 
       - name: Check deployment state
@@ -327,7 +360,7 @@ jobs:
             --sort-by=.lastTimestamp | tail -50
 
       # ==================================================
-      # 19. Wait for rollout
+      # 21. Wait for rollout
       # ==================================================
 
       - name: Wait for rollout
@@ -337,7 +370,7 @@ jobs:
             --timeout=180s
 
       # ==================================================
-      # 20. Verify deployed image
+      # 22. Verify deployed image
       # ==================================================
 
       - name: Verify deployed image
@@ -368,7 +401,7 @@ jobs:
             -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
       # ==================================================
-      # 21. Final verification
+      # 23. Final verification
       # ==================================================
 
       - name: Verify deployment
