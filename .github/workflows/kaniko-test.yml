@@ -13,6 +13,9 @@ env:
   GAR_REPOSITORY: kaniko-test
   IMAGE_NAME: kaniko-test
 
+  # Source repository used for OCI manifest annotation
+  OCI_SOURCE: https://github.com/megupatil/kaniko-test
+
 jobs:
   kaniko-build-and-deploy:
     runs-on: ubuntu-latest
@@ -63,7 +66,35 @@ jobs:
           ./wizcli tag --help
 
       # ==================================================
-      # 4. Authenticate to Wiz
+      # 4. Validate Kaniko annotation support
+      #
+      # IMPORTANT:
+      # This validates the exact Kaniko executor version
+      # being used below.
+      # ==================================================
+
+      - name: Validate Kaniko annotation support
+        run: |
+          echo "=============================================="
+          echo "KANIKO ANNOTATION SUPPORT"
+          echo "=============================================="
+
+          docker run --rm \
+            gcr.io/kaniko-project/executor:v1.23.2-debug \
+            --help > /tmp/kaniko-help.txt
+
+          if grep -q -- "--annotation" /tmp/kaniko-help.txt; then
+            echo "Kaniko executor supports --annotation"
+          else
+            echo "ERROR: Kaniko v1.23.2-debug does not expose --annotation"
+            echo
+            echo "Kaniko help output:"
+            cat /tmp/kaniko-help.txt
+            exit 1
+          fi
+
+      # ==================================================
+      # 5. Authenticate to Wiz
       # ==================================================
 
       - name: Authenticate to Wiz
@@ -76,7 +107,7 @@ jobs:
             --secret "$WIZ_CLIENT_SECRET"
 
       # ==================================================
-      # 5. Scan source repository with Wiz
+      # 6. Scan source repository with Wiz
       #
       # Reporting only.
       # Does not block the pipeline.
@@ -92,7 +123,7 @@ jobs:
           ./wizcli dir scan --path .
 
       # ==================================================
-      # 6. Authenticate to Google Cloud
+      # 7. Authenticate to Google Cloud
       # ==================================================
 
       - name: Authenticate to Google Cloud
@@ -101,7 +132,7 @@ jobs:
           credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
 
       # ==================================================
-      # 7. Setup gcloud
+      # 8. Setup gcloud
       # ==================================================
 
       - name: Set up gcloud
@@ -110,7 +141,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 8. Configure Docker for Artifact Registry
+      # 9. Configure Docker for Artifact Registry
       # ==================================================
 
       - name: Configure Docker
@@ -120,9 +151,13 @@ jobs:
             --quiet
 
       # ==================================================
-      # 9. Build container image with Kaniko
+      # 10. Build container image with Kaniko
       #
-      # Kaniko builds the image but does NOT push it.
+      # Kaniko:
+      # - builds the image
+      # - does NOT push it
+      # - exports it to image.tar
+      # - attempts to add a manifest-level OCI annotation
       # ==================================================
 
       - name: Build image with Kaniko
@@ -131,6 +166,12 @@ jobs:
           echo "KANIKO BUILD"
           echo "=============================================="
 
+          echo "Image:"
+          echo "${IMAGE_NAME}:${GITHUB_SHA}"
+
+          echo "OCI source annotation:"
+          echo "org.opencontainers.image.source=${OCI_SOURCE}"
+
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
             gcr.io/kaniko-project/executor:v1.23.2-debug \
@@ -138,10 +179,11 @@ jobs:
             --context=dir:///workspace \
             --destination="${IMAGE_NAME}:${GITHUB_SHA}" \
             --no-push \
-            --tar-path=/workspace/image.tar
+            --tar-path=/workspace/image.tar \
+            --annotation "org.opencontainers.image.source=${OCI_SOURCE}"
 
       # ==================================================
-      # 10. Verify Kaniko output
+      # 11. Verify Kaniko output
       # ==================================================
 
       - name: Verify Kaniko image archive
@@ -153,7 +195,7 @@ jobs:
           ls -lh image.tar
 
       # ==================================================
-      # 11. Load Kaniko image into Docker
+      # 12. Load Kaniko image into Docker
       # ==================================================
 
       - name: Load Kaniko image
@@ -171,9 +213,8 @@ jobs:
           docker images
 
       # ==================================================
-      # 12. Create GAR-qualified local image tag
+      # 13. Create GAR-qualified local image tag
       #
-      # IMPORTANT:
       # docker tag does NOT push anything.
       # ==================================================
 
@@ -202,10 +243,9 @@ jobs:
           docker images "${GAR_IMAGE}"
 
       # ==================================================
-      # 13. Scan built image with Wiz
+      # 14. Scan built image with Wiz
       #
-      # Manual Dockerfile mapping.
-      #
+      # Explicit Dockerfile mapping.
       # Reporting only - does not block pipeline.
       # ==================================================
 
@@ -233,9 +273,9 @@ jobs:
             --dockerfile "${GITHUB_WORKSPACE}/Dockerfile"
 
       # ==================================================
-      # 14. Push image to Artifact Registry
+      # 15. Push image to Artifact Registry
       #
-      # This is the first time the image is published.
+      # This is the first actual registry publication.
       # ==================================================
 
       - name: Push image to Artifact Registry
@@ -250,7 +290,7 @@ jobs:
           docker push "${GAR_IMAGE}:latest"
 
       # ==================================================
-      # 15. Verify image in Artifact Registry
+      # 16. Verify image in Artifact Registry
       # ==================================================
 
       - name: Verify image in Artifact Registry
@@ -266,9 +306,9 @@ jobs:
             --format="yaml(name,version,updateTime)"
 
       # ==================================================
-      # 16. Wiz tag / digest correlation
+      # 17. Wiz tag / digest correlation
       #
-      # Executed AFTER the registry push.
+      # Runs AFTER the image is pushed to GAR.
       # ==================================================
 
       - name: Tag image in Wiz
@@ -286,7 +326,7 @@ jobs:
             "${GAR_IMAGE}:${GITHUB_SHA}"
 
       # ==================================================
-      # 17. Get GKE credentials
+      # 18. Get GKE credentials
       # ==================================================
 
       - name: Get GKE credentials
@@ -297,7 +337,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 18. Deploy Kubernetes manifests
+      # 19. Deploy Kubernetes manifests
       # ==================================================
 
       - name: Deploy application
@@ -310,7 +350,7 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       # ==================================================
-      # 19. Deploy exact image scanned and pushed
+      # 20. Deploy exact image scanned and pushed
       # ==================================================
 
       - name: Set deployed image
@@ -327,7 +367,7 @@ jobs:
             kaniko-test="${GAR_IMAGE}:${GITHUB_SHA}"
 
       # ==================================================
-      # 20. Check deployment state
+      # 21. Check deployment state
       # ==================================================
 
       - name: Check deployment state
@@ -360,7 +400,7 @@ jobs:
             --sort-by=.lastTimestamp | tail -50
 
       # ==================================================
-      # 21. Wait for rollout
+      # 22. Wait for rollout
       # ==================================================
 
       - name: Wait for rollout
@@ -370,7 +410,7 @@ jobs:
             --timeout=180s
 
       # ==================================================
-      # 22. Verify deployed image
+      # 23. Verify deployed image
       # ==================================================
 
       - name: Verify deployed image
@@ -401,7 +441,7 @@ jobs:
             -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
       # ==================================================
-      # 23. Final verification
+      # 24. Final verification
       # ==================================================
 
       - name: Verify deployment
