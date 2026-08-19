@@ -1,7 +1,13 @@
-name: Kaniko Build + Wiz CLI Scan + GKE Deploy
+name: Kaniko Build + Wiz OCI Annotation + GKE Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      image_version:
+        description: "Container image version"
+        required: true
+        default: "1.0.0"
+        type: string
 
 env:
   PROJECT_ID: clgcporg193-p001
@@ -12,6 +18,12 @@ env:
   GAR_LOCATION: us-central1
   GAR_REPOSITORY: kaniko-test
   IMAGE_NAME: kaniko-test
+
+  # Git repository used for OCI manifest correlation
+  OCI_SOURCE: https://github.com/megupatil/kaniko-test
+
+  # Pin the maintained Kaniko version for reproducibility
+  KANIKO_IMAGE: ghcr.io/osscontainertools/kaniko:v1.28.0
 
 jobs:
   kaniko-build-and-deploy:
@@ -35,7 +47,9 @@ jobs:
 
       - name: Install Wiz CLI
         run: |
-          curl -Lo wizcli https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-amd64
+          curl -Lo wizcli \
+            https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-amd64
+
           chmod +x wizcli
 
           echo "=============================================="
@@ -63,7 +77,40 @@ jobs:
           ./wizcli tag --help
 
       # ==================================================
-      # 4. Authenticate to Wiz
+      # 4. Validate Kaniko annotation support
+      #
+      # This checks the exact Kaniko image used below.
+      # ==================================================
+
+      - name: Validate Kaniko annotation support
+        run: |
+          echo "=============================================="
+          echo "KANIKO VERSION"
+          echo "=============================================="
+
+          docker run --rm \
+            "${KANIKO_IMAGE}" \
+            version
+
+          echo "=============================================="
+          echo "KANIKO ANNOTATION SUPPORT"
+          echo "=============================================="
+
+          docker run --rm \
+            "${KANIKO_IMAGE}" \
+            --help > /tmp/kaniko-help.txt
+
+          if grep -q -- "--annotation" /tmp/kaniko-help.txt; then
+            echo "Kaniko supports --annotation"
+          else
+            echo "ERROR: ${KANIKO_IMAGE} does not expose --annotation"
+            echo
+            grep -A5 -B5 "annotation" /tmp/kaniko-help.txt || true
+            exit 1
+          fi
+
+      # ==================================================
+      # 5. Authenticate to Wiz
       # ==================================================
 
       - name: Authenticate to Wiz
@@ -76,10 +123,9 @@ jobs:
             --secret "$WIZ_CLIENT_SECRET"
 
       # ==================================================
-      # 5. Scan source repository with Wiz
+      # 6. Source repository scan
       #
       # Reporting only.
-      # Does not block the pipeline.
       # ==================================================
 
       - name: Scan repository with Wiz CLI
@@ -92,7 +138,7 @@ jobs:
           ./wizcli dir scan --path .
 
       # ==================================================
-      # 6. Authenticate to Google Cloud
+      # 7. Authenticate to Google Cloud
       # ==================================================
 
       - name: Authenticate to Google Cloud
@@ -101,7 +147,7 @@ jobs:
           credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
 
       # ==================================================
-      # 7. Setup gcloud
+      # 8. Setup gcloud
       # ==================================================
 
       - name: Set up gcloud
@@ -110,7 +156,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 8. Configure Docker for Artifact Registry
+      # 9. Configure Docker for Artifact Registry
       # ==================================================
 
       - name: Configure Docker
@@ -120,28 +166,47 @@ jobs:
             --quiet
 
       # ==================================================
-      # 9. Build container image with Kaniko
+      # 10. Build image with Kaniko + OCI annotation
       #
-      # Kaniko builds the image but does NOT push it.
+      # IMPORTANT:
+      # - Kaniko remains the builder.
+      # - Image is built without pushing.
+      # - Manifest-level OCI annotation is added.
       # ==================================================
 
       - name: Build image with Kaniko
         run: |
+          GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
+
           echo "=============================================="
           echo "KANIKO BUILD"
           echo "=============================================="
 
+          echo "Kaniko:"
+          echo "${KANIKO_IMAGE}"
+
+          echo "Image:"
+          echo "${IMAGE_NAME}:${IMAGE_VERSION}"
+
+          echo "Git SHA:"
+          echo "${GITHUB_SHA}"
+
+          echo "OCI annotation:"
+          echo "org.opencontainers.image.source=${OCI_SOURCE}"
+
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
-            gcr.io/kaniko-project/executor:v1.23.2-debug \
+            "${KANIKO_IMAGE}" \
             --dockerfile=/workspace/Dockerfile \
             --context=dir:///workspace \
-            --destination="${IMAGE_NAME}:${GITHUB_SHA}" \
+            --destination="${IMAGE_NAME}:${IMAGE_VERSION}" \
             --no-push \
-            --tar-path=/workspace/image.tar
+            --tar-path=/workspace/image.tar \
+            --annotation "org.opencontainers.image.source=${OCI_SOURCE}"
 
       # ==================================================
-      # 10. Verify Kaniko output
+      # 11. Verify Kaniko output
       # ==================================================
 
       - name: Verify Kaniko image archive
@@ -153,7 +218,7 @@ jobs:
           ls -lh image.tar
 
       # ==================================================
-      # 11. Load Kaniko image into Docker
+      # 12. Load Kaniko image into Docker
       # ==================================================
 
       - name: Load Kaniko image
@@ -171,122 +236,144 @@ jobs:
           docker images
 
       # ==================================================
-      # 12. Create GAR-qualified local image tag
-      #
-      # IMPORTANT:
-      # docker tag does NOT push anything.
+      # 13. Create GAR-qualified local tags
       # ==================================================
 
       - name: Tag image for Artifact Registry
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
-          echo "GAR IMAGE REFERENCE"
+          echo "GAR IMAGE REFERENCES"
           echo "=============================================="
 
+          echo "${GAR_IMAGE}:${IMAGE_VERSION}"
           echo "${GAR_IMAGE}:${GITHUB_SHA}"
+          echo "${GAR_IMAGE}:latest"
 
           docker tag \
-            "${IMAGE_NAME}:${GITHUB_SHA}" \
+            "${IMAGE_NAME}:${IMAGE_VERSION}" \
+            "${GAR_IMAGE}:${IMAGE_VERSION}"
+
+          docker tag \
+            "${IMAGE_NAME}:${IMAGE_VERSION}" \
             "${GAR_IMAGE}:${GITHUB_SHA}"
 
           docker tag \
-            "${IMAGE_NAME}:${GITHUB_SHA}" \
+            "${IMAGE_NAME}:${IMAGE_VERSION}" \
             "${GAR_IMAGE}:latest"
-
-          echo "=============================================="
-          echo "GAR-TAGGED LOCAL IMAGE"
-          echo "=============================================="
 
           docker images "${GAR_IMAGE}"
 
       # ==================================================
-      # 13. Scan built image with Wiz
+      # 14. Scan the OCI-annotated image with Wiz
       #
-      # Manual Dockerfile mapping.
-      #
-      # Reporting only - does not block pipeline.
+      # Reporting only.
       # ==================================================
 
-      - name: Scan container image with Wiz CLI
+      - name: Scan annotated image with Wiz CLI
         continue-on-error: true
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
           echo "WIZ CONTAINER IMAGE SCAN"
           echo "=============================================="
 
           echo "Image:"
-          echo "${GAR_IMAGE}:${GITHUB_SHA}"
+          echo "${GAR_IMAGE}:${IMAGE_VERSION}"
 
           echo "Dockerfile:"
           echo "${GITHUB_WORKSPACE}/Dockerfile"
+
+          echo "OCI source:"
+          echo "${OCI_SOURCE}"
 
           echo "=============================================="
           echo "WIZ SCAN RESULTS"
           echo "=============================================="
 
           ./wizcli scan container-image \
-            "${GAR_IMAGE}:${GITHUB_SHA}" \
+            "${GAR_IMAGE}:${IMAGE_VERSION}" \
             --dockerfile "${GITHUB_WORKSPACE}/Dockerfile"
 
       # ==================================================
-      # 14. Push image to Artifact Registry
-      #
-      # This is the first time the image is published.
+      # 15. Push image to Artifact Registry
       # ==================================================
 
       - name: Push image to Artifact Registry
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
           echo "PUSH TO ARTIFACT REGISTRY"
           echo "=============================================="
 
+          docker push "${GAR_IMAGE}:${IMAGE_VERSION}"
           docker push "${GAR_IMAGE}:${GITHUB_SHA}"
           docker push "${GAR_IMAGE}:latest"
 
       # ==================================================
-      # 15. Verify image in Artifact Registry
+      # 16. Verify image in Artifact Registry
       # ==================================================
 
       - name: Verify image in Artifact Registry
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
           echo "ARTIFACT REGISTRY IMAGE"
           echo "=============================================="
 
           gcloud artifacts docker images describe \
-            "${GAR_IMAGE}:${GITHUB_SHA}" \
+            "${GAR_IMAGE}:${IMAGE_VERSION}" \
             --format="yaml(name,version,updateTime)"
 
       # ==================================================
-      # 16. Wiz tag / digest correlation
+      # 17. Inspect OCI manifest
       #
-      # Executed AFTER the registry push.
+      # This is the key validation step.
+      # ==================================================
+
+      - name: Verify OCI manifest annotation
+        run: |
+          GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
+
+          echo "=============================================="
+          echo "OCI MANIFEST"
+          echo "=============================================="
+
+          docker buildx imagetools inspect \
+            "${GAR_IMAGE}:${IMAGE_VERSION}" \
+            --raw
+
+      # ==================================================
+      # 18. Wiz digest enrichment
+      #
+      # Keep this if you want both the OCI annotation
+      # test and the existing Wiz digest enrichment.
       # ==================================================
 
       - name: Tag image in Wiz
+        continue-on-error: true
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
-          echo "WIZ IMAGE TAG / DIGEST CORRELATION"
+          echo "WIZ DIGEST ENRICHMENT"
           echo "=============================================="
-
-          echo "Image:"
-          echo "${GAR_IMAGE}:${GITHUB_SHA}"
 
           ./wizcli tag \
-            "${GAR_IMAGE}:${GITHUB_SHA}"
+            "${GAR_IMAGE}:${IMAGE_VERSION}"
 
       # ==================================================
-      # 17. Get GKE credentials
+      # 19. Get GKE credentials
       # ==================================================
 
       - name: Get GKE credentials
@@ -297,10 +384,10 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ==================================================
-      # 18. Deploy Kubernetes manifests
+      # 20. Deploy Kubernetes manifests
       # ==================================================
 
-      - name: Deploy application
+      - name: Deploy Kubernetes manifests
         run: |
           echo "=============================================="
           echo "DEPLOY KUBERNETES MANIFESTS"
@@ -310,24 +397,25 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       # ==================================================
-      # 19. Deploy exact image scanned and pushed
+      # 21. Deploy exact version
       # ==================================================
 
       - name: Set deployed image
         run: |
           GAR_IMAGE="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_VERSION="${{ github.event.inputs.image_version }}"
 
           echo "=============================================="
           echo "DEPLOY IMAGE"
           echo "=============================================="
 
-          echo "${GAR_IMAGE}:${GITHUB_SHA}"
+          echo "${GAR_IMAGE}:${IMAGE_VERSION}"
 
           kubectl set image deployment/kaniko-test \
-            kaniko-test="${GAR_IMAGE}:${GITHUB_SHA}"
+            kaniko-test="${GAR_IMAGE}:${IMAGE_VERSION}"
 
       # ==================================================
-      # 20. Check deployment state
+      # 22. Check deployment state
       # ==================================================
 
       - name: Check deployment state
@@ -360,7 +448,7 @@ jobs:
             --sort-by=.lastTimestamp | tail -50
 
       # ==================================================
-      # 21. Wait for rollout
+      # 23. Wait for rollout
       # ==================================================
 
       - name: Wait for rollout
@@ -370,7 +458,7 @@ jobs:
             --timeout=180s
 
       # ==================================================
-      # 22. Verify deployed image
+      # 24. Verify deployed image
       # ==================================================
 
       - name: Verify deployed image
@@ -401,7 +489,7 @@ jobs:
             -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
       # ==================================================
-      # 23. Final verification
+      # 25. Final verification
       # ==================================================
 
       - name: Verify deployment
